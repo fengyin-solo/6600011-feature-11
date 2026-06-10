@@ -1,11 +1,74 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useEEGStore } from '../store/eeg';
-import { Recording } from '../types';
+import { Recording, RecordingFrame } from '../types';
 
 const CHANNEL_NAMES: Record<string, string> = {
   Fp1: '左前额', Fp2: '右前额', F3: '左额', F4: '右额',
   C3: '左中央', C4: '右中央', P3: '左顶', P4: '右顶',
   O1: '左枕', O2: '右枕'
+};
+
+const STATUS_META: Record<string, { label: string; color: string; icon: string }> = {
+  focused: { label: '专注', color: '#1976d2', icon: '🎯' },
+  relaxed: { label: '放松', color: '#388e3c', icon: '🍃' },
+  fatigued: { label: '疲劳', color: '#d32f2f', icon: '😴' },
+  neutral: { label: '中性', color: '#9e9e9e', icon: '🧘' },
+};
+
+interface RecordingSummary {
+  dominantStatus: string;
+  dominantLabel: string;
+  dominantColor: string;
+  dominantIcon: string;
+  avgFocus: number;
+  avgRelaxation: number;
+  avgFatigue: number;
+  statusDistribution: { status: string; label: string; color: string; ratio: number }[];
+}
+
+const computeRecordingSummary = (frames: RecordingFrame[]): RecordingSummary | null => {
+  if (!frames || frames.length === 0) return null;
+
+  let sumFocus = 0, sumRelaxation = 0, sumFatigue = 0;
+  const statusCounts: Record<string, number> = {};
+
+  for (const frame of frames) {
+    sumFocus += frame.brainState.focus;
+    sumRelaxation += frame.brainState.relaxation;
+    sumFatigue += frame.brainState.fatigue;
+    statusCounts[frame.brainState.status] = (statusCounts[frame.brainState.status] || 0) + 1;
+  }
+
+  const n = frames.length;
+  let dominantStatus = 'neutral';
+  let maxCount = 0;
+  for (const [status, count] of Object.entries(statusCounts)) {
+    if (count > maxCount) {
+      maxCount = count;
+      dominantStatus = status;
+    }
+  }
+
+  const meta = STATUS_META[dominantStatus] || STATUS_META.neutral;
+  const distribution = (['focused', 'relaxed', 'fatigued', 'neutral'] as const)
+    .filter(s => statusCounts[s])
+    .map(s => ({
+      status: s,
+      label: STATUS_META[s].label,
+      color: STATUS_META[s].color,
+      ratio: statusCounts[s] / n,
+    }));
+
+  return {
+    dominantStatus,
+    dominantLabel: meta.label,
+    dominantColor: meta.color,
+    dominantIcon: meta.icon,
+    avgFocus: sumFocus / n,
+    avgRelaxation: sumRelaxation / n,
+    avgFatigue: sumFatigue / n,
+    statusDistribution: distribution,
+  };
 };
 
 const formatDuration = (seconds: number): string => {
@@ -430,17 +493,102 @@ export const RecordingPanel: React.FC = () => {
                   </div>
                 </div>
                 <div style={{
+                  fontSize: '11px',
+                  color: '#666',
+                  marginBottom: '6px',
                   display: 'flex',
                   justifyContent: 'space-between',
-                  alignItems: 'center',
                 }}>
-                  <span style={{ fontSize: '11px', color: '#666' }}>
-                    时长: {formatDuration(recording.duration)} · {recording.frames.length} 帧
-                  </span>
-                  <span style={{ fontSize: '11px', color: '#999' }}>
-                    {recording.channel}
-                  </span>
+                  <span>时长: {formatDuration(recording.duration)} · {recording.frames.length} 帧</span>
+                  <span style={{ color: '#999' }}>{recording.channel}</span>
                 </div>
+                {(() => {
+                  const summary = computeRecordingSummary(recording.frames);
+                  if (!summary) return null;
+                  return (
+                    <div style={{
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      background: `linear-gradient(135deg, ${summary.dominantColor}10, ${summary.dominantColor}06)`,
+                      border: `1px solid ${summary.dominantColor}30`,
+                    }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        marginBottom: '6px',
+                      }}>
+                        <span style={{ fontSize: '14px' }}>{summary.dominantIcon}</span>
+                        <span style={{
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          color: summary.dominantColor,
+                        }}>
+                          主要状态: {summary.dominantLabel}
+                        </span>
+                        <span style={{ fontSize: '10px', color: '#999', marginLeft: 'auto' }}>
+                          占比 {(summary.statusDistribution.find(s => s.status === summary.dominantStatus)?.ratio ?? 0) * 100 | 0}%
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', marginBottom: '6px' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '10px', color: '#999', marginBottom: '2px' }}>专注</div>
+                          <div style={{ height: '4px', background: '#e0e0e0', borderRadius: '2px', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${Math.min(100, summary.avgFocus)}%`, background: '#1976d2', borderRadius: '2px' }} />
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#1976d2', fontWeight: 600, marginTop: '1px' }}>{summary.avgFocus.toFixed(0)}</div>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '10px', color: '#999', marginBottom: '2px' }}>放松</div>
+                          <div style={{ height: '4px', background: '#e0e0e0', borderRadius: '2px', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${Math.min(100, summary.avgRelaxation)}%`, background: '#388e3c', borderRadius: '2px' }} />
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#388e3c', fontWeight: 600, marginTop: '1px' }}>{summary.avgRelaxation.toFixed(0)}</div>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '10px', color: '#999', marginBottom: '2px' }}>疲劳</div>
+                          <div style={{ height: '4px', background: '#e0e0e0', borderRadius: '2px', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${Math.min(100, summary.avgFatigue)}%`, background: '#d32f2f', borderRadius: '2px' }} />
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#d32f2f', fontWeight: 600, marginTop: '1px' }}>{summary.avgFatigue.toFixed(0)}</div>
+                        </div>
+                      </div>
+                      {summary.statusDistribution.length > 0 && (
+                        <div style={{
+                          display: 'flex',
+                          height: '4px',
+                          borderRadius: '2px',
+                          overflow: 'hidden',
+                          background: '#f5f5f5',
+                        }}>
+                          {summary.statusDistribution.map(d => (
+                            <div
+                              key={d.status}
+                              style={{
+                                width: `${d.ratio * 100}%`,
+                                background: d.color,
+                              }}
+                              title={`${d.label} ${(d.ratio * 100).toFixed(0)}%`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      <div style={{
+                        display: 'flex',
+                        gap: '6px',
+                        marginTop: '4px',
+                        flexWrap: 'wrap',
+                      }}>
+                        {summary.statusDistribution.map(d => (
+                          <span key={d.status} style={{ fontSize: '9px', color: '#666', display: 'flex', alignItems: 'center', gap: '2px' }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: d.color, display: 'inline-block' }} />
+                            {d.label} {(d.ratio * 100).toFixed(0)}%
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>
